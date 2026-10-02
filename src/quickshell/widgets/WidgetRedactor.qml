@@ -238,6 +238,11 @@ Scope {
                     property bool isInitializing: true
                     property int topZ: 1
 
+                    property var selectedIds: []
+                    property var undoStack: []
+                    property var redoStack: []
+                    property var gestureSnapshot: null
+
                     readonly property var selectedWidget: {
                         if (!selectedId) return null;
                         for (let i = 0; i < widgetRepeater.count; i++) {
@@ -327,11 +332,6 @@ Scope {
                         redactorMode.updateToolbarObscured();
                     }
 
-                    property var selectedIds: []
-                    property var undoStack: []
-                    property var redoStack: []
-                    property var gestureSnapshot: null
-
                     function currentSelectionIds() {
                         let ids = [];
                         for (let i = 0; i < selectedIds.length; i++) ids.push(String(selectedIds[i]));
@@ -366,8 +366,7 @@ Scope {
                     }
 
                     function pushUndo() {
-                        let stack = undoStack.slice();
-                        stack.push(snapshotLayout());
+                        let stack = undoStack.concat([snapshotLayout()]);
                         if (stack.length > 50) stack.shift();
                         undoStack = stack;
                         redoStack = [];
@@ -382,8 +381,7 @@ Scope {
                         let before = JSON.stringify(gestureSnapshot);
                         let after = JSON.stringify(snapshotLayout());
                         if (before !== after) {
-                            let stack = undoStack.slice();
-                            stack.push(gestureSnapshot);
+                            let stack = undoStack.concat([gestureSnapshot]);
                             if (stack.length > 50) stack.shift();
                             undoStack = stack;
                             redoStack = [];
@@ -423,9 +421,7 @@ Scope {
                         let stack = undoStack.slice();
                         let prev = stack.pop();
                         undoStack = stack;
-                        let rstack = redoStack.slice();
-                        rstack.push(snapshotLayout());
-                        redoStack = rstack;
+                        redoStack = redoStack.concat([snapshotLayout()]);
                         applyLayoutSnapshot(prev);
                     }
 
@@ -434,9 +430,7 @@ Scope {
                         let stack = redoStack.slice();
                         let next = stack.pop();
                         redoStack = stack;
-                        let ustack = undoStack.slice();
-                        ustack.push(snapshotLayout());
-                        undoStack = ustack;
+                        undoStack = undoStack.concat([snapshotLayout()]);
                         applyLayoutSnapshot(next);
                     }
 
@@ -483,9 +477,7 @@ Scope {
                             };
                             let customs = {};
                             try {
-                                for (let k in row) {
-                                    if (WidgetRegistry.standardKeys.indexOf(k) < 0) customs[k] = row[k];
-                                }
+                                customs = WidgetRegistry.extractProps(row);
                             } catch (e) {}
                             for (let k in customs) entry[k] = customs[k];
                             activeWidgetsModel.append(entry);
@@ -1011,67 +1003,6 @@ Scope {
                         border.width: s(1)
                     }
 
-                    property string contextTargetId: ""
-
-                    MouseArea {
-                        anchors.fill: parent
-                        z: 199999
-                        visible: contextMenu.visible
-                        onClicked: contextMenu.visible = false
-                    }
-
-                    Rectangle {
-                        id: contextMenu
-                        visible: false
-                        z: 200000
-                        width: s(170)
-                        height: menuCol.implicitHeight + s(12)
-                        color: ThemeBackend.base
-                        border.color: ThemeBackend.surface1
-                        border.width: s(1)
-                        radius: ThemeBackend.borderRadius
-
-                        Column {
-                            id: menuCol
-                            anchors.centerIn: parent
-                            spacing: s(4)
-                            width: parent.width - s(12)
-
-                            Button {
-                                width: parent.width
-                                text: I18n.t("widgets.ctx.duplicate", "Duplicate")
-                                onClicked: { contextMenu.visible = false; redactorMode.duplicateSelection(); }
-                            }
-                            Button {
-                                width: parent.width
-                                text: I18n.t("widgets.ctx.rotate", "Rotate 90°")
-                                onClicked: {
-                                    contextMenu.visible = false;
-                                    for (let i = 0; i < widgetRepeater.count; i++) {
-                                        let p = widgetRepeater.itemAt(i);
-                                        if (p && String(p.wId) === String(redactorMode.contextTargetId)) { p.rotateWidget(); break; }
-                                    }
-                                }
-                            }
-                            Button {
-                                width: parent.width
-                                text: I18n.t("widgets.ctx.reset", "Reset Size")
-                                onClicked: {
-                                    contextMenu.visible = false;
-                                    for (let i = 0; i < widgetRepeater.count; i++) {
-                                        let p = widgetRepeater.itemAt(i);
-                                        if (p && String(p.wId) === String(redactorMode.contextTargetId)) { p.resetWidgetSize(); break; }
-                                    }
-                                }
-                            }
-                            Button {
-                                width: parent.width
-                                text: I18n.t("widgets.ctx.delete", "Delete")
-                                onClicked: { contextMenu.visible = false; redactorMode.deleteSelection(); }
-                            }
-                        }
-                    }
-
                     Rectangle {
                         x: redactorMode.activeGuideX
                         y: 0
@@ -1561,25 +1492,6 @@ Scope {
                                         redactorMode.activeGuideY = -1;
                                         redactorMode.endGesture();
                                         widgetProxy.finalizeSync();
-                                    }
-                                }
-
-                                MouseArea {
-                                    id: widgetContextMa
-                                    z: 3
-                                    anchors.fill: parent
-                                    acceptedButtons: Qt.RightButton
-                                    onPressed: (mouse) => {
-                                        if (!widgetProxy.isSelected) {
-                                            redactorMode.selectedId = widgetProxy.wId;
-                                            root.targetSelectedWidgetId = widgetProxy.wId;
-                                            redactorMode.selectedIds = [];
-                                        }
-                                        redactorMode.contextTargetId = widgetProxy.wId;
-                                        let pos = mapToItem(redactorMode, mouse.x, mouse.y);
-                                        contextMenu.x = Math.min(pos.x, redactorMode.width - contextMenu.width);
-                                        contextMenu.y = Math.min(pos.y, redactorMode.height - contextMenu.height);
-                                        contextMenu.visible = true;
                                     }
                                 }
 
