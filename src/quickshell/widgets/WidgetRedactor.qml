@@ -194,26 +194,27 @@ Scope {
 
                 Shortcut {
                     sequence: "Delete"
-                    onActivated: {
-                        if (!redactorMode.selectedId) return;
-                        let rmId = String(redactorMode.selectedId);
-                        redactorMode.selectedId = "";
-                        root.targetSelectedWidgetId = "";
-                        WidgetSync.removeWidget(redactorWindow.safeMonitorName, rmId);
-                        let activeModel = redactorMode.activeWidgetsModel;
-                        if (activeModel) {
-                            for (let i = activeModel.count - 1; i >= 0; i--) {
-                                if (String(activeModel.get(i).wId) === rmId) {
-                                    activeModel.remove(i, 1);
-                                }
-                            }
-                            if (activeModel.count === 0) {
-                                redactorMode.selectedId = "";
-                                root.targetSelectedWidgetId = "";
-                            }
-                        }
-                        redactorMode.updateToolbarObscured();
-                    }
+                    onActivated: redactorMode.deleteSelection()
+                }
+
+                Shortcut {
+                    sequence: "Ctrl+D"
+                    onActivated: redactorMode.duplicateSelection()
+                }
+
+                Shortcut {
+                    sequence: "Ctrl+Z"
+                    onActivated: redactorMode.undo()
+                }
+
+                Shortcut {
+                    sequence: "Ctrl+Shift+Z"
+                    onActivated: redactorMode.redo()
+                }
+
+                Shortcut {
+                    sequence: "Ctrl+Y"
+                    onActivated: redactorMode.redo()
                 }
 
                 Item {
@@ -318,10 +319,185 @@ Scope {
                     }
 
                     function removeAllWidgets() {
+                        redactorMode.pushUndo();
                         redactorMode.selectedId = "";
                         root.targetSelectedWidgetId = "";
                         activeWidgetsModel.clear();
                         WidgetSync.clearWidgets(redactorWindow.safeMonitorName);
+                        redactorMode.updateToolbarObscured();
+                    }
+
+                    property var selectedIds: []
+                    property var undoStack: []
+                    property var redoStack: []
+                    property var gestureSnapshot: null
+
+                    function currentSelectionIds() {
+                        let ids = [];
+                        for (let i = 0; i < selectedIds.length; i++) ids.push(String(selectedIds[i]));
+                        if (selectedId && !ids.includes(String(selectedId))) ids.push(String(selectedId));
+                        return ids;
+                    }
+
+                    function isWidgetSelected(wId) {
+                        if (String(redactorMode.selectedId) === String(wId)) return true;
+                        for (let i = 0; i < selectedIds.length; i++) {
+                            if (String(selectedIds[i]) === String(wId)) return true;
+                        }
+                        return false;
+                    }
+
+                    function snapshotRow(row) {
+                        let o = {};
+                        try {
+                            for (let k in row) {
+                                try { o[k] = row[k]; } catch (e) {}
+                            }
+                        } catch (e) {}
+                        return o;
+                    }
+
+                    function snapshotLayout() {
+                        let data = [];
+                        for (let i = 0; i < activeWidgetsModel.count; i++) {
+                            data.push(snapshotRow(activeWidgetsModel.get(i)));
+                        }
+                        return data;
+                    }
+
+                    function pushUndo() {
+                        let stack = undoStack.slice();
+                        stack.push(snapshotLayout());
+                        if (stack.length > 50) stack.shift();
+                        undoStack = stack;
+                        redoStack = [];
+                    }
+
+                    function beginGesture() {
+                        gestureSnapshot = snapshotLayout();
+                    }
+
+                    function endGesture() {
+                        if (gestureSnapshot === null) return;
+                        let before = JSON.stringify(gestureSnapshot);
+                        let after = JSON.stringify(snapshotLayout());
+                        if (before !== after) {
+                            let stack = undoStack.slice();
+                            stack.push(gestureSnapshot);
+                            if (stack.length > 50) stack.shift();
+                            undoStack = stack;
+                            redoStack = [];
+                        }
+                        gestureSnapshot = null;
+                    }
+
+                    function applyLayoutSnapshot(data) {
+                        redactorMode.selectedId = "";
+                        root.targetSelectedWidgetId = "";
+                        redactorMode.selectedIds = [];
+                        activeWidgetsModel.clear();
+                        for (let i = 0; i < data.length; i++) {
+                            let item = data[i];
+                            let entry = {
+                                wType: item.wType || item.type || "time",
+                                wVariant: item.wVariant || item.variant || WidgetRegistry.defaultVariant(item.wType || item.type || "time"),
+                                wX: item.wX !== undefined ? parseFloat(item.wX) : 100,
+                                wY: item.wY !== undefined ? parseFloat(item.wY) : 100,
+                                wWidth: item.wWidth !== undefined ? parseFloat(item.wWidth) : 100,
+                                wHeight: item.wHeight !== undefined ? parseFloat(item.wHeight) : 100,
+                                wOpacity: item.wOpacity !== undefined ? parseFloat(item.wOpacity) : 1.0,
+                                wRotation: item.wRotation !== undefined ? parseFloat(item.wRotation) : 0,
+                                wImagePath: item.wImagePath || "",
+                                wId: String(item.wId || ("w_" + Date.now() + "_" + i))
+                            };
+                            let customs = WidgetRegistry.extractProps(item);
+                            for (let k in customs) entry[k] = customs[k];
+                            activeWidgetsModel.append(entry);
+                        }
+                        WidgetSync.applyPreset(redactorWindow.safeMonitorName, data, true);
+                        redactorMode.updateToolbarObscured();
+                    }
+
+                    function undo() {
+                        if (undoStack.length === 0) return;
+                        let stack = undoStack.slice();
+                        let prev = stack.pop();
+                        undoStack = stack;
+                        let rstack = redoStack.slice();
+                        rstack.push(snapshotLayout());
+                        redoStack = rstack;
+                        applyLayoutSnapshot(prev);
+                    }
+
+                    function redo() {
+                        if (redoStack.length === 0) return;
+                        let stack = redoStack.slice();
+                        let next = stack.pop();
+                        redoStack = stack;
+                        let ustack = undoStack.slice();
+                        ustack.push(snapshotLayout());
+                        undoStack = ustack;
+                        applyLayoutSnapshot(next);
+                    }
+
+                    function deleteSelection() {
+                        let ids = currentSelectionIds();
+                        if (ids.length === 0) return;
+                        redactorMode.pushUndo();
+                        for (let j = 0; j < ids.length; j++) {
+                            WidgetSync.removeWidget(redactorWindow.safeMonitorName, ids[j]);
+                        }
+                        for (let i = activeWidgetsModel.count - 1; i >= 0; i--) {
+                            if (ids.includes(String(activeWidgetsModel.get(i).wId))) {
+                                activeWidgetsModel.remove(i, 1);
+                            }
+                        }
+                        redactorMode.selectedId = "";
+                        root.targetSelectedWidgetId = "";
+                        redactorMode.selectedIds = [];
+                        redactorMode.updateToolbarObscured();
+                    }
+
+                    function duplicateSelection() {
+                        let ids = currentSelectionIds();
+                        if (ids.length === 0) return;
+                        redactorMode.pushUndo();
+                        let newIds = [];
+                        for (let i = 0; i < activeWidgetsModel.count; i++) {
+                            let row = activeWidgetsModel.get(i);
+                            if (ids.indexOf(String(row.wId)) < 0) continue;
+                            let newId = "w_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+                            let nx = (row.wX || 0) + s(20);
+                            let ny = (row.wY || 0) + s(20);
+                            let entry = {
+                                wType: row.wType,
+                                wVariant: row.wVariant,
+                                wX: nx,
+                                wY: ny,
+                                wWidth: row.wWidth,
+                                wHeight: row.wHeight,
+                                wOpacity: row.wOpacity !== undefined ? row.wOpacity : 1.0,
+                                wRotation: row.wRotation !== undefined ? row.wRotation : 0,
+                                wImagePath: row.wImagePath || "",
+                                wId: newId
+                            };
+                            let customs = {};
+                            try {
+                                for (let k in row) {
+                                    if (WidgetRegistry.standardKeys.indexOf(k) < 0) customs[k] = row[k];
+                                }
+                            } catch (e) {}
+                            for (let k in customs) entry[k] = customs[k];
+                            activeWidgetsModel.append(entry);
+                            WidgetSync.addWidget(redactorWindow.safeMonitorName, newId, entry.wType, nx, ny, entry.wWidth, entry.wHeight, entry.wOpacity, entry.wImagePath, entry.wRotation, entry.wVariant);
+                            for (let k in customs) WidgetSync.setProperty(redactorWindow.safeMonitorName, newId, k, customs[k]);
+                            newIds.push(newId);
+                        }
+                        if (newIds.length > 0) {
+                            redactorMode.selectedId = newIds[newIds.length - 1];
+                            root.targetSelectedWidgetId = newIds[newIds.length - 1];
+                            redactorMode.selectedIds = newIds.slice(0, newIds.length - 1);
+                        }
                         redactorMode.updateToolbarObscured();
                     }
 
@@ -656,6 +832,8 @@ Scope {
 
                         let defVariant = WidgetRegistry.defaultVariant(typeKey);
 
+                        redactorMode.pushUndo();
+
                         activeWidgetsModel.append({
                             "wType": typeKey,
                             "wVariant": defVariant,
@@ -733,6 +911,7 @@ Scope {
                         } else if (action === "stretchWidth") {
                             let item = (itemIndex >= 0 && itemIndex < activeWidgetsModel.count) ? activeWidgetsModel.get(itemIndex) : null;
                             if (!item) return;
+                            redactorMode.pushUndo();
 
                             let rot = Math.abs(Math.round(proxy.wRotation || 0)) % 360;
                             if (rot % 180 === 0) {
@@ -766,9 +945,130 @@ Scope {
                     MouseArea {
                         anchors.fill: parent
                         z: -1
-                        onClicked: {
-                            redactorMode.selectedId = "";
-                            root.targetSelectedWidgetId = "";
+
+                        property real pressX: 0
+                        property real pressY: 0
+                        property bool dragging: false
+
+                        onPressed: (mouse) => {
+                            pressX = mouse.x;
+                            pressY = mouse.y;
+                            dragging = false;
+                        }
+
+                        onPositionChanged: (mouse) => {
+                            if (!pressed) return;
+                            if (!dragging && (Math.abs(mouse.x - pressX) > s(4) || Math.abs(mouse.y - pressY) > s(4))) {
+                                dragging = true;
+                            }
+                            if (dragging) {
+                                marqueeRect.x = Math.min(pressX, mouse.x);
+                                marqueeRect.y = Math.min(pressY, mouse.y);
+                                marqueeRect.width = Math.abs(mouse.x - pressX);
+                                marqueeRect.height = Math.abs(mouse.y - pressY);
+                                marqueeRect.visible = true;
+                            }
+                        }
+
+                        onReleased: (mouse) => {
+                            if (dragging) {
+                                let rx1 = Math.min(pressX, mouse.x);
+                                let ry1 = Math.min(pressY, mouse.y);
+                                let rx2 = Math.max(pressX, mouse.x);
+                                let ry2 = Math.max(pressY, mouse.y);
+                                let shift = (mouse.modifiers & Qt.ShiftModifier);
+                                let ids = shift ? redactorMode.selectedIds.slice() : [];
+                                for (let i = 0; i < widgetRepeater.count; i++) {
+                                    let p = widgetRepeater.itemAt(i);
+                                    if (!p) continue;
+                                    let wx1 = p.x;
+                                    let wy1 = p.y;
+                                    let wx2 = p.x + p.width;
+                                    let wy2 = p.y + p.height;
+                                    if (wx1 < rx2 && wx2 > rx1 && wy1 < ry2 && wy2 > ry1) {
+                                        if (ids.indexOf(String(p.wId)) < 0) ids.push(String(p.wId));
+                                    }
+                                }
+                                redactorMode.selectedIds = ids;
+                                redactorMode.selectedId = ids.length > 0 ? ids[ids.length - 1] : "";
+                                root.targetSelectedWidgetId = redactorMode.selectedId;
+                            } else {
+                                redactorMode.selectedId = "";
+                                root.targetSelectedWidgetId = "";
+                                redactorMode.selectedIds = [];
+                            }
+                            dragging = false;
+                            marqueeRect.visible = false;
+                        }
+                    }
+
+                    Rectangle {
+                        id: marqueeRect
+                        visible: false
+                        z: 150000
+                        color: Qt.rgba(ThemeBackend.mauve.r, ThemeBackend.mauve.g, ThemeBackend.mauve.b, 0.15)
+                        border.color: ThemeBackend.mauve
+                        border.width: s(1)
+                    }
+
+                    property string contextTargetId: ""
+
+                    MouseArea {
+                        anchors.fill: parent
+                        z: 199999
+                        visible: contextMenu.visible
+                        onClicked: contextMenu.visible = false
+                    }
+
+                    Rectangle {
+                        id: contextMenu
+                        visible: false
+                        z: 200000
+                        width: s(170)
+                        height: menuCol.implicitHeight + s(12)
+                        color: ThemeBackend.base
+                        border.color: ThemeBackend.surface1
+                        border.width: s(1)
+                        radius: ThemeBackend.borderRadius
+
+                        Column {
+                            id: menuCol
+                            anchors.centerIn: parent
+                            spacing: s(4)
+                            width: parent.width - s(12)
+
+                            Button {
+                                width: parent.width
+                                text: I18n.t("widgets.ctx.duplicate", "Duplicate")
+                                onClicked: { contextMenu.visible = false; redactorMode.duplicateSelection(); }
+                            }
+                            Button {
+                                width: parent.width
+                                text: I18n.t("widgets.ctx.rotate", "Rotate 90°")
+                                onClicked: {
+                                    contextMenu.visible = false;
+                                    for (let i = 0; i < widgetRepeater.count; i++) {
+                                        let p = widgetRepeater.itemAt(i);
+                                        if (p && String(p.wId) === String(redactorMode.contextTargetId)) { p.rotateWidget(); break; }
+                                    }
+                                }
+                            }
+                            Button {
+                                width: parent.width
+                                text: I18n.t("widgets.ctx.reset", "Reset Size")
+                                onClicked: {
+                                    contextMenu.visible = false;
+                                    for (let i = 0; i < widgetRepeater.count; i++) {
+                                        let p = widgetRepeater.itemAt(i);
+                                        if (p && String(p.wId) === String(redactorMode.contextTargetId)) { p.resetWidgetSize(); break; }
+                                    }
+                                }
+                            }
+                            Button {
+                                width: parent.width
+                                text: I18n.t("widgets.ctx.delete", "Delete")
+                                onClicked: { contextMenu.visible = false; redactorMode.deleteSelection(); }
+                            }
                         }
                     }
 
@@ -844,7 +1144,7 @@ Scope {
 
                                 property int currentZ: index
                                 z: (widgetProxy.isSelected ? 50000 : 0) + currentZ
-                                opacity: (redactorMode.selectedId === "" || widgetProxy.isSelected) ? 1.0 : 0.6
+                                opacity: ((redactorMode.selectedId === "" && redactorMode.selectedIds.length === 0) || widgetProxy.isSelected) ? 1.0 : 0.6
                                 Behavior on opacity { NumberAnimation { duration: 150 } }
 
                                 Component.onCompleted: {
@@ -870,7 +1170,7 @@ Scope {
                                 property real wOpacity: model.wOpacity !== undefined ? model.wOpacity : 1.0
                                 property int wIndex: index
 
-                                property bool isSelected: redactorMode.selectedId === widgetProxy.wId
+                                property bool isSelected: redactorMode.isWidgetSelected(widgetProxy.wId)
                                 property bool hasUnsyncedChanges: false
 
                                 property var savedAspects: ({})
@@ -957,6 +1257,7 @@ Scope {
                                 }
 
                                 function rotateWidget() {
+                                    redactorMode.pushUndo();
                                     let currentRot = Math.abs(Math.round(widgetProxy.wRotation || 0)) % 360;
                                     let nextRot = currentRot + 90;
 
@@ -1043,6 +1344,7 @@ Scope {
 
                                 function applyVariant(variantId) {
                                     if (widgetProxy.wVariant === variantId) return;
+                                    redactorMode.pushUndo();
 
                                     let currentAspect = model.wWidth / model.wHeight;
                                     savedAspects[widgetProxy.wVariant] = currentAspect;
@@ -1064,6 +1366,7 @@ Scope {
                                 }
 
                                 function resetWidgetSize() {
+                                    redactorMode.pushUndo();
                                     let currentRot = Math.abs(Math.round(widgetProxy.wRotation || 0)) % 360;
                                     let curBW = (currentRot % 180 === 0) ? model.wWidth : model.wHeight;
                                     let curBH = (currentRot % 180 === 0) ? model.wHeight : model.wWidth;
@@ -1153,16 +1456,49 @@ Scope {
                                     property real startDragY
                                     property real startWidgetX
                                     property real startWidgetY
+                                    property var dragStarts: ({})
 
                                     onPressed: (mouse) => {
-                                        redactorMode.selectedId = widgetProxy.wId;
-                                        root.targetSelectedWidgetId = widgetProxy.wId;
+                                        if (mouse.modifiers & Qt.ShiftModifier) {
+                                            let ids = redactorMode.selectedIds.slice();
+                                            let idx = ids.indexOf(widgetProxy.wId);
+                                            if (idx >= 0) {
+                                                ids.splice(idx, 1);
+                                                redactorMode.selectedIds = ids;
+                                                if (redactorMode.selectedId === widgetProxy.wId) redactorMode.selectedId = "";
+                                            } else {
+                                                if (redactorMode.selectedId && redactorMode.selectedId !== widgetProxy.wId) {
+                                                    ids.push(redactorMode.selectedId);
+                                                }
+                                                ids.push(widgetProxy.wId);
+                                                redactorMode.selectedIds = ids;
+                                                redactorMode.selectedId = widgetProxy.wId;
+                                            }
+                                        } else if (!widgetProxy.isSelected) {
+                                            redactorMode.selectedId = widgetProxy.wId;
+                                            root.targetSelectedWidgetId = widgetProxy.wId;
+                                            redactorMode.selectedIds = [];
+                                        } else {
+                                            redactorMode.selectedId = widgetProxy.wId;
+                                            root.targetSelectedWidgetId = widgetProxy.wId;
+                                        }
                                         widgetProxy.bringToFront();
+                                        redactorMode.beginGesture();
                                         let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                         startDragX = localPos.x;
                                         startDragY = localPos.y;
                                         startWidgetX = widgetProxy.x;
                                         startWidgetY = widgetProxy.y;
+
+                                        let starts = {};
+                                        let selIds = redactorMode.currentSelectionIds();
+                                        for (let i = 0; i < widgetRepeater.count; i++) {
+                                            let p = widgetRepeater.itemAt(i);
+                                            if (p && selIds.indexOf(String(p.wId)) >= 0) {
+                                                starts[String(p.wId)] = { x: p.x, y: p.y, index: i };
+                                            }
+                                        }
+                                        dragStarts = starts;
                                     }
 
                                     onPositionChanged: (mouse) => {
@@ -1176,8 +1512,24 @@ Scope {
 
                                             let snapInfo = redactorMode.calculateSnap(widgetProxy, rawX, rawY);
 
+                                            let primaryDx = snapInfo.x - startWidgetX;
+                                            let primaryDy = snapInfo.y - startWidgetY;
+
                                             model.wX = snapInfo.x;
                                             model.wY = snapInfo.y;
+
+                                            for (let key in dragStarts) {
+                                                if (String(key) === String(widgetProxy.wId)) continue;
+                                                let st = dragStarts[key];
+                                                let p = widgetRepeater.itemAt(st.index);
+                                                if (p) {
+                                                    let entry = redactorMode.activeWidgetsModel.get(st.index);
+                                                    if (entry) {
+                                                        redactorMode.activeWidgetsModel.setProperty(st.index, "wX", st.x + primaryDx);
+                                                        redactorMode.activeWidgetsModel.setProperty(st.index, "wY", st.y + primaryDy);
+                                                    }
+                                                }
+                                            }
 
                                             redactorMode.activeGuideX = snapInfo.guideX;
                                             redactorMode.activeGuideY = snapInfo.guideY;
@@ -1189,13 +1541,45 @@ Scope {
                                     onReleased: {
                                         redactorMode.activeGuideX = -1;
                                         redactorMode.activeGuideY = -1;
+                                        // sync all dragged widgets
+                                        for (let key in dragStarts) {
+                                            let st = dragStarts[key];
+                                            let p = widgetRepeater.itemAt(st.index);
+                                            if (p) {
+                                                let entry = redactorMode.activeWidgetsModel.get(st.index);
+                                                if (entry) {
+                                                    WidgetSync.setGeometry(redactorWindow.safeMonitorName, String(key), entry.wX, entry.wY, entry.wWidth, entry.wHeight, p.wOpacity, p.wRotation);
+                                                }
+                                            }
+                                        }
+                                        redactorMode.endGesture();
                                         widgetProxy.finalizeSync();
                                     }
 
                                     onCanceled: {
                                         redactorMode.activeGuideX = -1;
                                         redactorMode.activeGuideY = -1;
+                                        redactorMode.endGesture();
                                         widgetProxy.finalizeSync();
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: widgetContextMa
+                                    z: 3
+                                    anchors.fill: parent
+                                    acceptedButtons: Qt.RightButton
+                                    onPressed: (mouse) => {
+                                        if (!widgetProxy.isSelected) {
+                                            redactorMode.selectedId = widgetProxy.wId;
+                                            root.targetSelectedWidgetId = widgetProxy.wId;
+                                            redactorMode.selectedIds = [];
+                                        }
+                                        redactorMode.contextTargetId = widgetProxy.wId;
+                                        let pos = mapToItem(redactorMode, mouse.x, mouse.y);
+                                        contextMenu.x = Math.min(pos.x, redactorMode.width - contextMenu.width);
+                                        contextMenu.y = Math.min(pos.y, redactorMode.height - contextMenu.height);
+                                        contextMenu.visible = true;
                                     }
                                 }
 
@@ -1458,6 +1842,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1474,10 +1859,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1502,6 +1889,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1518,10 +1906,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1546,6 +1936,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1562,10 +1953,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1590,6 +1983,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1606,10 +2000,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1635,6 +2031,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1651,10 +2048,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1680,6 +2079,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1696,10 +2096,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1725,6 +2127,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1741,10 +2144,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -1770,6 +2175,7 @@ Scope {
 
                                             onPressed: (mouse) => {
                                                 widgetProxy.bringToFront();
+                                                redactorMode.beginGesture();
                                                 let localPos = mapToItem(workspaceArea, mouse.x, mouse.y);
                                                 startMouseX = localPos.x;
                                                 startMouseY = localPos.y;
@@ -1786,10 +2192,12 @@ Scope {
                                             }
 
                                             onReleased: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
 
                                             onCanceled: {
+                                                redactorMode.endGesture();
                                                 widgetProxy.finalizeSync();
                                             }
                                         }
@@ -2033,6 +2441,7 @@ Scope {
 
                                             onClicked: {
                                                 let rmId = String(widgetProxy.wId);
+                                                redactorMode.pushUndo();
                                                 if (redactorMode.selectedId === rmId) {
                                                     redactorMode.selectedId = "";
                                                     root.targetSelectedWidgetId = "";
@@ -2455,6 +2864,7 @@ Scope {
                             property string targetWidgetId: ""
 
                             onImageSelected: (filePath, fileName) => {
+                                redactorMode.pushUndo();
                                 let model = redactorMode.activeWidgetsModel;
                                 if (targetWidgetIndex >= 0 && targetWidgetId !== "") {
                                     if (model) {
