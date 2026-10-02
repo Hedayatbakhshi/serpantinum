@@ -192,6 +192,30 @@ Scope {
                     }
                 }
 
+                Shortcut {
+                    sequence: "Delete"
+                    onActivated: {
+                        if (!redactorMode.selectedId) return;
+                        let rmId = String(redactorMode.selectedId);
+                        redactorMode.selectedId = "";
+                        root.targetSelectedWidgetId = "";
+                        WidgetSync.removeWidget(redactorWindow.safeMonitorName, rmId);
+                        let activeModel = redactorMode.activeWidgetsModel;
+                        if (activeModel) {
+                            for (let i = activeModel.count - 1; i >= 0; i--) {
+                                if (String(activeModel.get(i).wId) === rmId) {
+                                    activeModel.remove(i, 1);
+                                }
+                            }
+                            if (activeModel.count === 0) {
+                                redactorMode.selectedId = "";
+                                root.targetSelectedWidgetId = "";
+                            }
+                        }
+                        redactorMode.updateToolbarObscured();
+                    }
+                }
+
                 Item {
                     id: redactorMode
                     anchors.fill: parent
