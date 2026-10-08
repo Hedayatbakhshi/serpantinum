@@ -67,16 +67,25 @@ Item {
     property bool isSysVisible: (!activeTarget || activeTarget.moduleActive) && showLayout
     property color basePrimary: (ThemeBackend.primary !== undefined && ThemeBackend.primary !== "") ? ThemeBackend.primary : ThemeBackend.mauve
 
+    property bool isSubscribed: false
+
     function updateSubscription() {
-        if (isSysVisible) {
+        if (isSysVisible && !isSubscribed) {
+            isSubscribed = true;
             SysData.subscribe();
-        } else {
+        } else if (!isSysVisible && isSubscribed) {
+            isSubscribed = false;
             SysData.unsubscribe();
         }
     }
 
     Component.onCompleted: updateSubscription()
-    Component.onDestruction: SysData.unsubscribe()
+    Component.onDestruction: {
+        if (isSubscribed) {
+            isSubscribed = false;
+            SysData.unsubscribe();
+        }
+    }
     onIsSysVisibleChanged: updateSubscription()
 
     property real targetHeight: ((!activeTarget || activeTarget.moduleActive) && sysLayout.implicitHeight > 0) ? (sysLayout.implicitHeight + (barWindow ? barWindow.s(isCompact ? 8 : 10) : (isCompact ? 8 : 10))) : 0
@@ -104,7 +113,7 @@ Item {
         property color accentColor: root.basePrimary
         property bool showText: textVal !== ""
         property bool useSineWave: root.useSineWave
-        property bool initAnimTrigger: (!barWindow || (root.activeTarget && root.activeTarget.isPreview))
+        property bool initAnimTrigger: (!barWindow || !!(root.activeTarget && root.activeTarget.isPreview))
 
         property real animValue: initAnimTrigger ? value : 0
         Behavior on animValue { NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
